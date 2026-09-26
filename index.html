@@ -14,20 +14,18 @@
  #start-benchmark-button { position: fixed; right: 10px; top: 70px; z-index: 100; }
 
  #loading-spinner {
-    display: none; /* Initially hidden */
+    display: none;
     position: fixed;
     top: 50%;
     left: 50%;
     width: 50px;
     height: 50px;
-    margin-top: -25px; /* Half of height */
-    margin-left: -25px; /* Half of width */
-    border: 6px solid #f3f3f3; /* Light grey border for the base */
-    border-top: 6px solid #3498db; /* Blue border for the spinning part */
-    border-radius: 50%; /* Make it a circle */
-    animation: spin 4s linear infinite; /* Spinning animation, reduced speed */
-    /* Removed border-image as it interferes with border-radius for this effect */
-    /* Removed border-image-slice */
+    margin-top: -25px;
+    margin-left: -25px;
+    border: 6px solid #f3f3f3;
+    border-top: 6px solid #3498db;
+    border-radius: 50%;
+    animation: spin 4s linear infinite;
  }
 
  @keyframes spin {
@@ -52,455 +50,575 @@
 <button id="start-benchmark-button">Start Benchmark</button>
 <script type="module">
 alert("!!This web page may cause your device to freeze. Please ensure you do not have any work files open!!\n\nOptimized test code, with added frame rate statistics and unlimited rendering frame rate for better CPU and GPU performance testing.\nOptimized based on cznull@bilibili's code, by 迷湖浅浅@bilibili");
-// ----------------------------------------------------------- context & FPS
-const gl = document.getElementById('glcanvas').getContext('webgl2',{antialias:false});
-if(!gl){alert('WebGL 2 not supported');throw'';}
+
+// ============================================================================
+// 1) WebGL2 上下文
+// ============================================================================
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2', {
+    antialias: false,
+    alpha: false,
+    depth: false,
+    stencil: false,
+    preserveDrawingBuffer: false
+});
+if (!gl) { alert('WebGL 2 not supported'); throw ''; }
 const fpsElem = document.getElementById('fps');
 
-// -------------------------- shader sources (same as previous) -------------
-const vsrc=`#version 300 es
+// ============================================================================
+// 2) 着色器（模型精度完全不变）
+// ============================================================================
+const vsrc = `#version 300 es
 precision highp float;
-layout(location=0)in vec2 pos;out vec2 vUV;
-void main(){vUV=pos*0.5+0.5;gl_Position=vec4(pos,0.0,1.0);} `;
-const fsrc=`#version 300 es
+layout(location=0) in vec2 pos;
+out vec2 vUV;
+void main(){ vUV = pos*0.5 + 0.5; gl_Position = vec4(pos, 0.0, 1.0); }`;
+
+const fsrc = `#version 300 es
 precision highp float;
 #define MAX_STEPS 128
 #define MAX_DIST  20.0
 #define SURF_EPS   0.001
 #define ESCAPE     8.0
-in vec2 vUV;out vec4 frag;uniform vec3 camPos,camRight,camUp,camForward;uniform float aspect;uniform int extraIterations; uniform float loadIntensity;
-float mandelbulbDE(in vec3 p){vec3 z=p;float dr=1.0;float r=0.0;const int ITER=8;for(int i=0;i<ITER;i++){r=length(z);if(r>ESCAPE)break;float th=acos(z.z/r),ph=atan(z.y,z.x);float r8=pow(r,8.0);dr=pow(r,7.0)*8.0*dr+1.0;th*=8.0;ph*=8.0;z=r8*vec3(sin(th)*cos(ph),sin(th)*sin(ph),cos(th))+p;}return 0.5*log(r)*r/dr;}
-vec3 calcNormal(vec3 p){const vec3 e=vec3(1e-4,0,0);return normalize(vec3(mandelbulbDE(p+e.xyy)-mandelbulbDE(p-e.xyy),mandelbulbDE(p+e.yxy)-mandelbulbDE(p-e.yxy),mandelbulbDE(p+e.yyx)-mandelbulbDE(p-e.yyx)));}
-vec3 shade(vec3 p,vec3 rd,vec3 n){float r1=dot(p,p);vec3 base=vec3(sin(r1*10.0)*0.5+0.5,sin(r1*10.0+2.05)*0.5+0.5,sin(r1*10.0-2.05)*0.5+0.5);vec3 refl=reflect(rd,n);float r3=max(0.0,dot(refl,vec3(0.276,0.920,0.276)));float r4=dot(n,vec3(0.276,0.920,0.276));r3=pow(r3,4.0);float mixv=r3*0.45+r4*0.25+0.3;return base*mixv;}
-void main(){vec2 xy=(vUV*2.0-1.0)*vec2(aspect,1.0);vec3 rd=normalize(camForward+xy.x*camRight+xy.y*camUp);float t=0.0;float d;bool hit=false;vec3 p;for(int i=0;i<MAX_STEPS;i++){p=camPos+rd*t;d=mandelbulbDE(p);if(d<SURF_EPS){hit=true;break;}if(t>MAX_DIST)break;t+=d;}vec3 color=vec3(0.0);if(hit){vec3 n=calcNormal(p);if(dot(n,rd)<0.0)color=shade(p,rd,n);}
+#define ITER       8
+
+in vec2 vUV;
+out vec4 frag;
+
+uniform vec3  camPos, camRight, camUp, camForward;
+uniform float aspect;
+uniform int   extraIterations;
+uniform float loadIntensity;
+
+float mandelbulbDE(in vec3 p){
+    vec3  z  = p;
+    float dr = 1.0;
+    float r  = 0.0;
+
+    for(int i = 0; i < ITER; i++){
+        r = length(z);
+        if(r > ESCAPE) break;
+
+        float r2 = r * r;
+        float r4 = r2 * r2;
+        float r7 = r4 * r2 * r;
+        float r8 = r7 * r;
+
+        dr = 8.0 * r7 * dr + 1.0;
+
+        float invR = 1.0 / max(r, 1e-20);
+        float th = acos(clamp(z.z * invR, -1.0, 1.0)) * 8.0;
+        float ph = atan(z.y, z.x) * 8.0;
+
+        float st = sin(th);
+        float ct = cos(th);
+        float sp = sin(ph);
+        float cp = cos(ph);
+
+        z = r8 * vec3(st * cp, st * sp, ct) + p;
+    }
+    return 0.5 * log(r) * r / dr;
+}
+
+vec3 calcNormal(vec3 p){
+    const vec3 e = vec3(1e-4, 0.0, 0.0);
+    return normalize(vec3(
+        mandelbulbDE(p + e.xyy) - mandelbulbDE(p - e.xyy),
+        mandelbulbDE(p + e.yxy) - mandelbulbDE(p - e.yxy),
+        mandelbulbDE(p + e.yyx) - mandelbulbDE(p - e.yyx)
+    ));
+}
+
+vec3 shade(vec3 p, vec3 rd, vec3 n){
+    float r1 = dot(p, p);
+    vec3 base = vec3(sin(r1*10.0)*0.5 + 0.5,
+                     sin(r1*10.0 + 2.05)*0.5 + 0.5,
+                     sin(r1*10.0 - 2.05)*0.5 + 0.5);
+    vec3  refl = reflect(rd, n);
+    float r3 = max(0.0, dot(refl, vec3(0.276, 0.920, 0.276)));
+    float r4 = dot(n, vec3(0.276, 0.920, 0.276));
+    r3 = pow(r3, 4.0);
+    float mixv = r3*0.45 + r4*0.25 + 0.3;
+    return base * mixv;
+}
+
+void main(){
+    vec2 xy = (vUV * 2.0 - 1.0) * vec2(aspect, 1.0);
+    vec3 rd = normalize(camForward + xy.x*camRight + xy.y*camUp);
+
+    float t = 0.0;
+    float d = 0.0;
+    bool  hit = false;
+    vec3  p = camPos;
+
+    for(int i = 0; i < MAX_STEPS; i++){
+        p = camPos + rd * t;
+        d = mandelbulbDE(p);
+        if(d < SURF_EPS){ hit = true; break; }
+        if(t > MAX_DIST) break;
+        t += d;
+    }
+
+    vec3 color = vec3(0.0);
+    if(hit){
+        vec3 n = calcNormal(p);
+        if(dot(n, rd) < 0.0) color = shade(p, rd, n);
+    }
 
     float extraLoadAccum = 0.0;
-    vec2 uv = vUV; // Use pixel coordinates
+    vec2 uv = vUV;
 
-    for(int i = 0; i < extraIterations; ++i) {
+    for(int i = 0; i < extraIterations; ++i){
         float fi = float(i);
         float val1 = fi * 0.01 + uv.x * 10.0;
         float val2 = fi * 0.02 + uv.y * 20.0;
 
         float temp = sin(val1) * cos(val2);
 
-        // Add a simple branch based on loop counter or a derived value
-        if (mod(fi, 2.0) < 1.0) { // Branch condition based on even/odd iteration
+        if(mod(fi, 2.0) < 1.0){
             temp += tan(val1 * 0.5);
         } else {
             temp -= sqrt(abs(val2));
         }
-
         extraLoadAccum += temp;
     }
-    // Apply the accumulated result with a small intensity and periodicity to the color
-    // We can use a slightly more complex application to ensure the value isn't ignored
-    color += vec3(sin(extraLoadAccum * 0.5), cos(extraLoadAccum * 0.7), sin(extraLoadAccum * 1.1)) * loadIntensity;
 
-    frag=vec4(color,1.0);} `;
+    color += vec3(sin(extraLoadAccum * 0.5),
+                  cos(extraLoadAccum * 0.7),
+                  sin(extraLoadAccum * 1.1)) * loadIntensity;
 
-function compile(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(s);return s;}
-const prog=gl.createProgram();gl.attachShader(prog,compile(gl.VERTEX_SHADER,vsrc));gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,fsrc));gl.bindAttribLocation(prog,0,'pos');gl.linkProgram(prog);if(!gl.getProgramParameter(prog,gl.LINK_STATUS))throw gl.getProgramInfoLog(prog);gl.useProgram(prog);
-const quad=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,quad);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,1,1,-1,-1,1,1,-1,1]),gl.STATIC_DRAW);gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
-const loc={camPos:gl.getUniformLocation(prog,'camPos'),camRight:gl.getUniformLocation(prog,'camRight'),camUp:gl.getUniformLocation(prog,'camUp'),camForward:gl.getUniformLocation(prog,'camForward'),aspect:gl.getUniformLocation(prog,'aspect'),
+    frag = vec4(color, 1.0);
+}`;
+
+function compile(type, src){
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
+    return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsrc));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsrc));
+gl.bindAttribLocation(prog, 0, 'pos');
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw gl.getProgramInfoLog(prog);
+gl.useProgram(prog);
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const loc = {
+    camPos:          gl.getUniformLocation(prog, 'camPos'),
+    camRight:        gl.getUniformLocation(prog, 'camRight'),
+    camUp:           gl.getUniformLocation(prog, 'camUp'),
+    camForward:      gl.getUniformLocation(prog, 'camForward'),
+    aspect:          gl.getUniformLocation(prog, 'aspect'),
     extraIterations: gl.getUniformLocation(prog, 'extraIterations'),
-    loadIntensity: gl.getUniformLocation(prog, 'loadIntensity')
+    loadIntensity:   gl.getUniformLocation(prog, 'loadIntensity')
 };
 
-// ---------------------- camera + auto-rotate ------------------------------
-let yaw=2.8,pitch=0.4,dist=3.0,target=[0,0,0];
-let dragging=false,lastX=0,lastY=0;const AUTO_SPEED=0.00025;
-// Variables for touch control
+// ============================================================================
+// 3) 相机 + 交互
+// ============================================================================
+let yaw = 2.8, pitch = 0.4, dist = 3.0, target = [0, 0, 0];
+let dragging = false, lastX = 0, lastY = 0;
+const AUTO_SPEED = 0.00025;
+
 let lasttimen = 0;
 let mx = 0, my = 0, mx1 = 0, my1 = 0;
 
-// VSync control: true for VSync (default), false for unlimited FPS
 let useVSync = true;
-// Max dimension for rendering resolution (longer side)
 let maxRenderDimension = 2048;
+const currentLoadIntensity = 0.001;
 
-// Timeout delay in milliseconds when VSync is disabled (set to 0 for immediate, higher values for more stability)
-// let nonVSyncTimeoutDelay = 0; // Default to 10 for safety
-
-// Variables for performance monitoring and delay adjustment
-// const frameTimeThreshold = 50; // ms - Threshold for detecting a significant lag in responsiveness (e.g., 50ms)
-// const adjustmentInterval = 3000; // Check and adjust every 3 seconds (using requestAnimationFrame)
-// let lastMonitorTimestamp = performance.now();
-// let lagDetected = false;
-// let performanceTimer = 0;
-
-// Variable to track if the next frame has been scheduled
-let isSchedulingNextFrame = false;
-
-// Global flags and variables for benchmark
+// ---- 基准测试状态 ----
 let isBenchmarking = false;
 let benchmarkIntervalId = null;
 let currentExtraIterations = 0;
-const loadDisplayElement = document.getElementById('load-display');
-const benchmarkStatusElement = document.getElementById('benchmark-status'); // Get the new element
-// Variables for dynamic load adjustment
-let loadStepSize = 100; // Default step size
-let initialFpsChecked = false; // Flag to ensure initial check happens once
+let loadStepSize = 100;
+let initialFpsChecked = false;
 
-// Define the key colors as RGB arrays [R, G, B]
-const colorDarkRed = [139, 70, 70]; // Low saturation dark red
-const colorFlameOrange = [255, 69, 0]; // Flame orange
-const colorSkyBlue = [135, 206, 235]; // Sky blue
+const loadDisplayElement     = document.getElementById('load-display');
+const benchmarkStatusElement = document.getElementById('benchmark-status');
+const loadingSpinner         = document.getElementById('loading-spinner');
+const startBenchmarkButton   = document.getElementById('start-benchmark-button');
+const vsyncSelect            = document.getElementById('vsync-select');
+const resolutionSelect       = document.getElementById('resolution-select');
 
-// Function to interpolate between two colors
-function lerpColor(color1, color2, factor) {
-    const result = color1.map((c1, i) => c1 + (color2[i] - c1) * factor);
-    return `rgb(${Math.round(result[0])}, ${Math.round(result[1])}, ${Math.round(result[2])})`;
+// ---- 颜色插值 ----
+const colorDarkRed     = [139,  70,  70];
+const colorFlameOrange = [255,  69,   0];
+const colorSkyBlue     = [135, 206, 235];
+
+function lerpColor(c1, c2, f){
+    const r = c1.map((v, i) => v + (c2[i] - v) * f);
+    return `rgb(${Math.round(r[0])}, ${Math.round(r[1])}, ${Math.round(r[2])})`;
+}
+function getColorForLoad(score){
+    if(score <= 10){
+        return lerpColor(colorDarkRed, colorFlameOrange, score / 10);
+    } else if(score <= 120){
+        return lerpColor(colorFlameOrange, colorSkyBlue, (score - 10) / 110);
+    }
+    return `rgb(${colorSkyBlue[0]}, ${colorSkyBlue[1]}, ${colorSkyBlue[2]})`;
 }
 
-// Function to get color based on load score
-function getColorForLoad(score) {
-    if (score <= 10) {
-        // Interpolate from dark red (score 0) to flame orange (score 10)
-        const factor = score / 10;
-        return lerpColor(colorDarkRed, colorFlameOrange, factor);
-    } else if (score <= 120) {
-        // Interpolate from flame orange (score 10) to sky blue (score 120)
-        const factor = (score - 10) / (120 - 10); // Factor from 0 to 1
-        return lerpColor(colorFlameOrange, colorSkyBlue, factor);
+// ============================================================================
+// 4) 帧调度 + 异步 fence 队列（关键修复：重试也走 MessageChannel）
+//
+//    上一版的缺陷：
+//      队列满时用 setTimeout(0) 重试 → Chromium 把嵌套 setTimeout(0) 钳制到 4ms
+//      → 每帧至少 4ms → FPS 被强行压到 250 以下，即使 GPU 能跑更快
+//
+//    本版修复：
+//      所有调度（正常帧 + 队列满重试）统一走 MessageChannel，
+//      它没有最小延迟限制，会尽快投递，让 CPU 紧跟 GPU 节奏。
+//
+//    MAX_FRAMES_IN_FLIGHT = 3：允许 GPU 最多领先 CPU 2 帧。
+//      · 2 → 延迟最低，FPS 稍低
+//      · 3 → 平衡点（默认）
+//      · 4~5 → FPS 更高，但画面延迟增加，快速旋转时会察觉
+// ============================================================================
+const MAX_FRAMES_IN_FLIGHT = 3;
+
+const frameChannel = new MessageChannel();
+let isRunning = false;
+let frameGeneration = 0;
+
+const pendingFences = [];
+
+frameChannel.port1.onmessage = (e) => {
+    if(e.data === frameGeneration && isRunning) render();
+};
+
+function scheduleFrame(){
+    if(!isRunning) return;
+    const gen = frameGeneration;
+    if(useVSync){
+        requestAnimationFrame(() => {
+            if(gen === frameGeneration && isRunning) render();
+        });
     } else {
-        // Above 120, stay sky blue
-        return `rgb(${colorSkyBlue[0]}, ${colorSkyBlue[1]}, ${colorSkyBlue[2]})`;
+        frameChannel.port2.postMessage(gen);
     }
 }
 
-// Function to start the rendering loop
-function startRenderingLoop() {
-    if (isSchedulingNextFrame) {
-        return; // Already scheduled
-    }
-    isSchedulingNextFrame = true;
+function startRenderingLoop(){
+    if(isRunning) return;
+    isRunning = true;
+    scheduleFrame();
+}
 
-    if (useVSync) {
-        window.requestAnimationFrame(render);
-    } else {
-        // Use setTimeout with 0 delay when VSync is off, removing dynamic delay adjustment
-        setTimeout(render, 0);
+function stopRenderingLoop(){
+    isRunning = false;
+    frameGeneration++;
+    while(pendingFences.length){
+        const f = pendingFences.pop();
+        try { gl.deleteSync(f); } catch(e) {}
     }
 }
 
-// Function to stop the current rendering loop scheduling
-function stopRenderingLoop() {
-    if (isSchedulingNextFrame) {
-        // Note: Cannot truly cancel requestAnimationFrame once requested,
-        // but we can prevent render from rescheduling itself.
-        isSchedulingNextFrame = false;
-        // For setTimeout, this would ideally clear the timeout,
-        // but the logic in render's end handles not rescheduling.
+// 非阻塞清理已完成的 fence
+function pollFences(){
+    while(pendingFences.length > 0){
+        const f = pendingFences[0];
+        let status;
+        try {
+            status = gl.clientWaitSync(f, 0, 0);
+        } catch(e) {
+            pendingFences.shift();
+            continue;
+        }
+        if(status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED){
+            gl.deleteSync(f);
+            pendingFences.shift();
+        } else {
+            break;
+        }
     }
 }
 
-// Get the select element and add event listener
-const vsyncSelect = document.getElementById('vsync-select');
-
-// Set initial useVSync state based on the dropdown value on page load
 useVSync = vsyncSelect.value === 'true';
 
 vsyncSelect.addEventListener('change', (event) => {
-    // Stop the current loop before changing the setting
     stopRenderingLoop();
-
     useVSync = event.target.value === 'true';
-    
-    // Start the new loop based on the updated setting
     startRenderingLoop();
 });
 
-// Get the resolution select element and add event listener
-const resolutionSelect = document.getElementById('resolution-select');
 resolutionSelect.addEventListener('change', (event) => {
-    maxRenderDimension = parseInt(event.target.value, 10); // Parse the selected value as integer
-    resize(); // Call resize to apply the new resolution
+    maxRenderDimension = parseInt(event.target.value, 10);
+    resize();
 });
 
-// Store original event listeners
-let mouseMoveHandler = e=>{if(!dragging)return;yaw+=0.005*(e.clientX-lastX);pitch+=0.005*(e.clientY-lastY);pitch=Math.max(-1.4,Math.min(1.4,pitch));lastX=e.clientX;lastY=e.clientY;};
-let mouseDownHandler = e=>{dragging=true;lastX=e.clientX;lastY=e.clientY};
-let mouseUpHandler = ()=>dragging=false;
-let wheelHandler = e=>{dist*=Math.exp(0.001*e.deltaY);};
+// ---- 鼠标 / 触摸 ----
+const mouseMoveHandler  = e => {
+    if(!dragging) return;
+    yaw   += 0.005 * (e.clientX - lastX);
+    pitch += 0.005 * (e.clientY - lastY);
+    pitch  = Math.max(-1.4, Math.min(1.4, pitch));
+    lastX = e.clientX; lastY = e.clientY;
+};
+const mouseDownHandler = e => { dragging = true; lastX = e.clientX; lastY = e.clientY; };
+const mouseUpHandler   = () => { dragging = false; };
+const wheelHandler     = e => { dist *= Math.exp(0.001 * e.deltaY); };
 
-// Store original touch event listeners
-let touchstartHandler = function (ev) {
-    var n = ev.touches.length;
-    if (n >= 2) { // Check for two or more touches
-        ev.preventDefault(); // Prevent default browser zoom
-    }
-    if (n == 1) {
-        var oEvent = ev.touches[0];
-        mx = oEvent.clientX;
-        my = oEvent.clientY;
-    }
-    else if (n == 2) {
-        var oEvent = ev.touches[0];
-        mx = oEvent.clientX;
-        my = oEvent.clientY;
-        oEvent = ev.touches[1];
-        mx1 = oEvent.clientX;
-        my1 = oEvent.clientY;
+const touchstartHandler = function (ev) {
+    const n = ev.touches.length;
+    if (n >= 2) ev.preventDefault();
+    if (n === 1) {
+        mx = ev.touches[0].clientX; my = ev.touches[0].clientY;
+    } else if (n === 2) {
+        mx = ev.touches[0].clientX; my = ev.touches[0].clientY;
+        mx1 = ev.touches[1].clientX; my1 = ev.touches[1].clientY;
     }
     lasttimen = n;
 };
 
-let touchendHandler = function (ev) {
-    var n = ev.touches.length;
-    if (n == 1) {
-        var oEvent = ev.touches[0];
-        mx = oEvent.clientX;
-        my = oEvent.clientY;
-    }
-    else if (n == 2) {
-        var oEvent = ev.touches[0];
-        mx = oEvent.clientX;
-        my = oEvent.clientY;
-        oEvent = ev.touches[1];
-        mx1 = oEvent.clientX;
-        my1 = oEvent.clientY;
+const touchendHandler = function (ev) {
+    const n = ev.touches.length;
+    if (n === 1) {
+        mx = ev.touches[0].clientX; my = ev.touches[0].clientY;
+    } else if (n === 2) {
+        mx = ev.touches[0].clientX; my = ev.touches[0].clientY;
+        mx1 = ev.touches[1].clientX; my1 = ev.touches[1].clientY;
     }
     lasttimen = n;
 };
 
-let touchmoveHandler = function (ev) {
-    ev.preventDefault(); // Prevent default touch behavior (like scrolling)
-    var n = ev.touches.length;
-    if (n == 1 && lasttimen == 1) {
-        var oEvent = ev.touches[0];
-        yaw += (oEvent.clientX - mx) * 0.002;
-        pitch += (oEvent.clientY - my) * 0.002;
-        pitch = Math.max(-1.4, Math.min(1.4, pitch)); // Clamp pitch
-        mx = oEvent.clientX;
-        my = oEvent.clientY;
-    }
-    else if (n == 2) {
-        var oEvent = ev.touches[0];
-        var oEvent1 = ev.touches[1];
-        var l1 = Math.sqrt((mx - mx1) * (mx - mx1) + (my - my1) * (my - my1) + 1.0);
-        mx = oEvent.clientX;
-        my = oEvent.clientY;
-        mx1 = oEvent1.clientX;
-        my1 = oEvent1.clientY;
-        var l = Math.sqrt((mx - mx1) * (mx - mx1) + (my - my1) * (my - my1) + 1.0);
-        dist *= l1 / l; // Scale distance based on pinch
+const touchmoveHandler = function (ev) {
+    ev.preventDefault();
+    const n = ev.touches.length;
+    if (n === 1 && lasttimen === 1) {
+        const o = ev.touches[0];
+        yaw   += (o.clientX - mx) * 0.002;
+        pitch += (o.clientY - my) * 0.002;
+        pitch  = Math.max(-1.4, Math.min(1.4, pitch));
+        mx = o.clientX; my = o.clientY;
+    } else if (n === 2) {
+        const o0 = ev.touches[0], o1 = ev.touches[1];
+        const l1 = Math.sqrt((mx - mx1) * (mx - mx1) + (my - my1) * (my - my1) + 1.0);
+        mx = o0.clientX; my = o0.clientY;
+        mx1 = o1.clientX; my1 = o1.clientY;
+        const l = Math.sqrt((mx - mx1) * (mx - mx1) + (my - my1) * (my - my1) + 1.0);
+        dist *= l1 / l;
     }
     lasttimen = n;
 };
 
-// Add original event listeners
 window.addEventListener('mousedown', mouseDownHandler);
-window.addEventListener('mouseup', mouseUpHandler);
+window.addEventListener('mouseup',   mouseUpHandler);
 window.addEventListener('mousemove', mouseMoveHandler);
-window.addEventListener('wheel', wheelHandler);
-document.addEventListener("touchstart", touchstartHandler, false);
-document.addEventListener("touchend", touchendHandler, false);
-document.addEventListener("touchmove", touchmoveHandler, false);
+window.addEventListener('wheel',     wheelHandler, { passive: true });
+document.addEventListener('touchstart', touchstartHandler, false);
+document.addEventListener('touchend',   touchendHandler,   false);
+document.addEventListener('touchmove',  touchmoveHandler,  false);
 
-function updateCamera(){const cp=[dist*Math.cos(pitch)*Math.cos(yaw)+target[0],dist*Math.sin(pitch)+target[1],dist*Math.cos(pitch)*Math.sin(yaw)+target[2]];const f=[target[0]-cp[0],target[1]-cp[1],target[2]-cp[2]];const flen=Math.hypot(...f);for(let i=0;i<3;i++)f[i]/=flen;const upRef=[0,1,0];const right=[f[1]*upRef[2]-f[2]*upRef[1],f[2]*upRef[0]-f[0]*upRef[2],f[0]*upRef[1]-f[1]*upRef[0]];const rlen=Math.hypot(...right);for(let i=0;i<3;i++)right[i]/=rlen;const up=[right[1]*f[2]-right[2]*f[1],right[2]*f[0]-right[0]*f[2],right[0]*f[1]-right[1]*f[0]];gl.uniform3fv(loc.camPos,cp);gl.uniform3fv(loc.camRight,right);gl.uniform3fv(loc.camUp,up);gl.uniform3fv(loc.camForward,f);}
+// ============================================================================
+// 5) 相机矩阵 + 尺寸
+// ============================================================================
+function updateCamera(){
+    const cp = [
+        dist * Math.cos(pitch) * Math.cos(yaw) + target[0],
+        dist * Math.sin(pitch)                   + target[1],
+        dist * Math.cos(pitch) * Math.sin(yaw) + target[2]
+    ];
+    const f = [target[0] - cp[0], target[1] - cp[1], target[2] - cp[2]];
+    const flen = Math.hypot(f[0], f[1], f[2]);
+    f[0] /= flen; f[1] /= flen; f[2] /= flen;
+
+    const upRef = [0, 1, 0];
+    const right = [
+        f[1] * upRef[2] - f[2] * upRef[1],
+        f[2] * upRef[0] - f[0] * upRef[2],
+        f[0] * upRef[1] - f[1] * upRef[0]
+    ];
+    const rlen = Math.hypot(right[0], right[1], right[2]);
+    right[0] /= rlen; right[1] /= rlen; right[2] /= rlen;
+
+    const up = [
+        right[1] * f[2] - right[2] * f[1],
+        right[2] * f[0] - right[0] * f[2],
+        right[0] * f[1] - right[1] * f[0]
+    ];
+
+    gl.uniform3fv(loc.camPos, cp);
+    gl.uniform3fv(loc.camRight, right);
+    gl.uniform3fv(loc.camUp, up);
+    gl.uniform3fv(loc.camForward, f);
+}
+
 function resize(){
-    const windowWidth = window.innerWidth;
+    const windowWidth  = window.innerWidth;
     const windowHeight = window.innerHeight;
-    // const devicePixelRatio = window.devicePixelRatio || 1; // We will not use devicePixelRatio for rendering resolution
-
-    // Calculate target rendering size based on maxRenderDimension and window aspect ratio
-    let targetWidth = maxRenderDimension;
-    let targetHeight = maxRenderDimension;
-
     const windowAspect = windowWidth / windowHeight;
 
-    if (windowAspect > 1.0) { // Window is wider than tall
-        // Set width to maxRenderDimension, scale height proportionally
-        targetHeight = Math.round(maxRenderDimension / windowAspect);
-    } else { // Window is taller than wide (or square)
-        // Set height to maxRenderDimension, scale width proportionally
-        targetWidth = Math.round(maxRenderDimension * windowAspect);
+    let targetWidth, targetHeight;
+    if (windowAspect > 1.0) {
+        targetWidth  = maxRenderDimension;
+        targetHeight = Math.max(1, Math.round(maxRenderDimension / windowAspect));
+    } else {
+        targetHeight = maxRenderDimension;
+        targetWidth  = Math.max(1, Math.round(maxRenderDimension * windowAspect));
     }
 
-    // Set internal rendering resolution
-    gl.canvas.width = maxRenderDimension;
-    gl.canvas.height = maxRenderDimension;
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width  = targetWidth;
+        canvas.height = targetHeight;
+    }
 
-    console.log(`Resized canvas to: ${gl.canvas.width}x${gl.canvas.height}`);
-
-    // Use the entire rendering buffer as the viewport
-    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-
-    // Pass the rendering buffer's aspect ratio to the shader
-    gl.uniform1f(loc.aspect, windowWidth / windowHeight);
-
-    // The canvas CSS (width: 100%; height: 100%;) makes it fill the display area.
-    // Since the rendering buffer now has the same aspect ratio as the window,
-    // the content will fill the screen without distortion.
+    gl.viewport(0, 0, targetWidth, targetHeight);
+    gl.uniform1f(loc.aspect, targetWidth / targetHeight);
 }
-window.addEventListener('resize',resize);resize(); // Initial call
+window.addEventListener('resize', resize);
+resize();
 
-// ------------------- micro-task based tick loop ---------------------------
+// ============================================================================
+// 6) 渲染主循环
+// ============================================================================
 let lastFpsUpdateTime = performance.now();
-let lastTime = performance.now(); // Initialize lastTime here
-let vsyncFrameCount = 0; // Frame counter for both modes
-
-const {port1,port2}=new MessageChannel();
-
-// Conditional scheduling based on useVSync
-// port1.onmessage = () => { /* Removed/No longer needed */ };
+let lastTime          = performance.now();
+let frameCount        = 0;
 
 function render(){
-    isSchedulingNextFrame = false; // Reset scheduling flag at the start of render
+    if(!isRunning) return;
 
-    // Increment frame counter (counts render calls in both modes)
-    vsyncFrameCount++;
+    // ---- 非 VSync 模式下的在途帧数控制 ----
+    if(!useVSync){
+        pollFences();
 
-    const now=performance.now(); // Current time
-    const dt=now-lastTime; // Calculate delta time
-    lastTime=now; // Update lastTime for the next frame
-    
-    if(!dragging){ // Modified condition: Only disable auto-rotation when dragging
-        yaw += AUTO_SPEED * dt;
+        if(pendingFences.length >= MAX_FRAMES_IN_FLIGHT){
+            // 队列满：不渲染，立即重新排队等待
+            // ★ 关键：走 MessageChannel，不走 setTimeout
+            scheduleFrame();
+            return;
+        }
     }
+
+    frameCount++;
+
+    const now = performance.now();
+    const dt  = now - lastTime;
+    lastTime  = now;
+
+    if(!dragging) yaw += AUTO_SPEED * dt;
+
     updateCamera();
 
-    // Set uniform values for extra load
-    const currentLoadIntensity = 0.001; // Small value to be almost invisible
     gl.uniform1i(loc.extraIterations, currentExtraIterations);
-    gl.uniform1f(loc.loadIntensity, currentLoadIntensity);
+    gl.uniform1f(loc.loadIntensity,   currentLoadIntensity);
 
-    gl.drawArrays(gl.TRIANGLES,0,6); // Submit drawing command
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-    gl.finish(); // Wait for GPU to finish
+    if(!useVSync){
+        const f = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if(f) pendingFences.push(f);
+    }
 
-    // Update FPS display approximately every second
     const currentTime = performance.now();
     if(currentTime - lastFpsUpdateTime >= 1000){
-        // FPS is the number of render calls per second in both modes
-        const fps = vsyncFrameCount * 1000 / (currentTime - lastFpsUpdateTime);
-        fpsElem.textContent=fps.toFixed(1)+' FPS';
+        const fps = frameCount * 1000 / (currentTime - lastFpsUpdateTime);
+        fpsElem.textContent = fps.toFixed(1) + ' FPS';
 
-        // Check if FPS is below 10 during benchmarking
         if (isBenchmarking && fps < 10) {
             stopBenchmark(currentExtraIterations);
         }
-
-        // Check if FPS is below 12 during benchmarking and initial check is done
         if (isBenchmarking && initialFpsChecked && fps < 12) {
             loadStepSize = 25;
             console.log('FPS < 12 during benchmark, setting load step size to 25.');
         }
 
-        // Reset counter for the next second
-        vsyncFrameCount = 0;
+        frameCount = 0;
         lastFpsUpdateTime = currentTime;
     }
 
-    // Schedule next frame using the new start function
-    startRenderingLoop();
+    scheduleFrame();
 }
 
-// Function to stop the benchmark and reset
-function stopBenchmark(finalIterations) {
-    clearInterval(benchmarkIntervalId); // Stop the interval
-    isBenchmarking = false; // Set benchmarking flag to false
+// ============================================================================
+// 7) 基准测试流程
+// ============================================================================
+function stopBenchmark(finalIterations){
+    clearInterval(benchmarkIntervalId);
+    isBenchmarking = false;
 
-    // Hide the spinner
     loadingSpinner.style.display = 'none';
-
-    // Hide the load display
     loadDisplayElement.style.display = 'none';
-    benchmarkStatusElement.style.display = 'none'; // Hide the benchmark status element
+    benchmarkStatusElement.style.display = 'none';
 
-    // Use a timeout to allow the spinner to hide before showing the alert
     setTimeout(() => {
         alert('Benchmark finished. Final Score: ' + (finalIterations / 100));
     }, 0);
 
-    // Clear extra load
     currentExtraIterations = 0;
     gl.uniform1i(loc.extraIterations, currentExtraIterations);
 
-    // Re-enable user interaction
     window.addEventListener('mousedown', mouseDownHandler);
-    window.addEventListener('mouseup', mouseUpHandler);
+    window.addEventListener('mouseup',   mouseUpHandler);
     window.addEventListener('mousemove', mouseMoveHandler);
-    window.addEventListener('wheel', wheelHandler);
-    document.addEventListener("touchstart", touchstartHandler, false);
-    document.addEventListener("touchend", touchendHandler, false);
-    document.addEventListener("touchmove", touchmoveHandler, false);
+    window.addEventListener('wheel',     wheelHandler, { passive: true });
+    document.addEventListener('touchstart', touchstartHandler, false);
+    document.addEventListener('touchend',   touchendHandler,   false);
+    document.addEventListener('touchmove',  touchmoveHandler,  false);
 
-    // Re-enable UI elements
-    resolutionSelect.disabled = false;
-    vsyncSelect.disabled = false;
+    resolutionSelect.disabled    = false;
+    vsyncSelect.disabled         = false;
     startBenchmarkButton.disabled = false;
 
     console.log('Benchmark stopped.');
 }
 
-// Get the start benchmark button
-const startBenchmarkButton = document.getElementById('start-benchmark-button');
-const loadingSpinner = document.getElementById('loading-spinner');
-
-// Add click event listener to the button
 startBenchmarkButton.addEventListener('click', () => {
-    if (isBenchmarking) {
-        return; // Prevent multiple clicks
-    }
+    if (isBenchmarking) return;
     isBenchmarking = true;
 
-    // Show the spinner
-    loadingSpinner.style.display = 'block';
+    loadingSpinner.style.display        = 'block';
+    loadDisplayElement.style.display    = 'block';
+    benchmarkStatusElement.style.display = 'block';
 
-    // Show the load display
-    loadDisplayElement.style.display = 'block';
-    benchmarkStatusElement.style.display = 'block'; // Show the benchmark status element
+    loadStepSize      = 100;
+    initialFpsChecked = false;
 
-    // Reset dynamic load adjustment variables for a new benchmark run
-    loadStepSize = 100; // Start with default step size
-    initialFpsChecked = false; // Reset the flag
-
-    // 1. Set resolution to 2048x2048
     maxRenderDimension = 2048;
-    resolutionSelect.value = '2048'; // Update dropdown display
-    resize(); // Apply new resolution
+    resolutionSelect.value = '2048';
+    resize();
 
-    // 2. Enable VSync
     useVSync = true;
-    vsyncSelect.value = 'true'; // Update dropdown display
-    stopRenderingLoop(); // Stop current loop
-    startRenderingLoop(); // Start new loop with VSync
+    vsyncSelect.value = 'true';
+    stopRenderingLoop();
+    startRenderingLoop();
 
-    // 3. Initialize view position
-    yaw = 2.8;
-    pitch = 0.4;
-    dist = 3.0;
+    yaw = 2.8; pitch = 0.4; dist = 3.0;
     target = [0, 0, 0];
-    // updateCamera() will be called in the next render frame
 
-    // 4. Disable user interaction
     window.removeEventListener('mousedown', mouseDownHandler);
-    window.removeEventListener('mouseup', mouseUpHandler);
+    window.removeEventListener('mouseup',   mouseUpHandler);
     window.removeEventListener('mousemove', mouseMoveHandler);
-    window.removeEventListener('wheel', wheelHandler);
-    document.removeEventListener("touchstart", touchstartHandler, false);
-    document.removeEventListener("touchend", touchendHandler, false);
-    document.removeEventListener("touchmove", touchmoveHandler, false);
+    window.removeEventListener('wheel',     wheelHandler);
+    document.removeEventListener('touchstart', touchstartHandler, false);
+    document.removeEventListener('touchend',   touchendHandler,   false);
+    document.removeEventListener('touchmove',  touchmoveHandler,  false);
 
-    // 5. Disable UI elements
-    resolutionSelect.disabled = true;
-    vsyncSelect.disabled = true;
+    resolutionSelect.disabled     = true;
+    vsyncSelect.disabled          = true;
     startBenchmarkButton.disabled = true;
 
-    console.log('Benchmark started: Resolution 2048x2048, VSync Enabled, View Initialized. User interaction disabled.');
+    console.log('Benchmark started: Resolution 2048, VSync Enabled, View Initialized.');
 
-    // Start incrementing extra iterations every second
-    currentExtraIterations = 0; // Initialize before starting
-    const initialLoad = Math.max(1, currentExtraIterations / 100); // Ensure displayed load is at least 1
-    loadDisplayElement.textContent = 'CURRENT LOAD: ' + initialLoad + '×';
-    loadDisplayElement.style.color = getColorForLoad(initialLoad);
-    benchmarkStatusElement.style.color = getColorForLoad(initialLoad); // Update color of benchmark status element
-    // Add a delay before starting the load increment
+    currentExtraIterations = 0;
+    const initialLoad = Math.max(1, currentExtraIterations / 100);
+    loadDisplayElement.textContent     = 'CURRENT LOAD: ' + initialLoad + '×';
+    loadDisplayElement.style.color     = getColorForLoad(initialLoad);
+    benchmarkStatusElement.style.color = getColorForLoad(initialLoad);
+
     setTimeout(() => {
-        // After 3 seconds, check the current FPS
-        const currentFps = vsyncFrameCount * 1000 / (performance.now() - lastFpsUpdateTime);
+        const elapsed = performance.now() - lastFpsUpdateTime;
+        const currentFps = elapsed > 0 ? (frameCount * 1000 / elapsed) : 0;
         console.log('Initial FPS after 3 seconds:', currentFps.toFixed(1));
 
         if (currentFps < 20) {
@@ -508,69 +626,23 @@ startBenchmarkButton.addEventListener('click', () => {
             console.log('Initial FPS < 20, setting load step size to 25.');
         } else {
             loadStepSize = 100;
-            console.log('Initial FPS >= 50, setting load step size to 100.');
+            console.log('Initial FPS >= 20, setting load step size to 100.');
         }
-        initialFpsChecked = true; // Mark initial check as done
+        initialFpsChecked = true;
 
-        // Start incrementing extra iterations every second
         benchmarkIntervalId = setInterval(() => {
             currentExtraIterations += loadStepSize;
-            console.log('Current Extra Iterations:', currentExtraIterations, 'Step Size:', loadStepSize);
-            const currentLoad = Math.max(1, currentExtraIterations / 100); // Ensure displayed load is at least 1
-            loadDisplayElement.textContent = 'CURRENT LOAD: ' + currentLoad + '×';
-            loadDisplayElement.style.color = getColorForLoad(currentLoad);
-            benchmarkStatusElement.style.color = getColorForLoad(currentLoad); // Update color of benchmark status element
+            const currentLoad = Math.max(1, currentExtraIterations / 100);
+            loadDisplayElement.textContent     = 'CURRENT LOAD: ' + currentLoad + '×';
+            loadDisplayElement.style.color     = getColorForLoad(currentLoad);
+            benchmarkStatusElement.style.color = getColorForLoad(currentLoad);
         }, 1000);
 
-    }, 3000); // 3 second delay
+    }, 3000);
 });
 
-// Initial kick-off using the new start function
-startRenderingLoop(); // Start the initial rendering loop
-// requestAnimationFrame(adjustTimeoutDelay); // Start the responsiveness monitoring loop separately
-
-// Function to dynamically adjust the nonVSyncTimeoutDelay based on responsiveness monitoring
-/*
-function adjustTimeoutDelay() {
-    const now = performance.now();
-    const delta = now - lastMonitorTimestamp;
-    lastMonitorTimestamp = now;
-
-    // Accumulate time to check adjustment interval
-    performanceTimer += delta;
-
-    // Detect significant lag (e.g., if rAF delta is much larger than expected, e.g., > 50ms)
-    if (delta > frameTimeThreshold) {
-        console.warn(`Lag detected! rAF delta: ${delta.toFixed(2)}ms`);
-        lagDetected = true;
-    }
-
-    // Check and adjust delay periodically
-    if (performanceTimer >= adjustmentInterval) {
-        performanceTimer = 0; // Reset timer
-
-        console.log(`Monitoring check. Current delay: ${nonVSyncTimeoutDelay}ms. Lag detected in last interval: ${lagDetected}`);
-
-        if (lagDetected) {
-            // Lag was detected in the last interval, try increasing delay (max 10ms)
-            if (nonVSyncTimeoutDelay < 10) {
-                nonVSyncTimeoutDelay++;
-                console.log(`Lag detected, increasing delay to ${nonVSyncTimeoutDelay}ms`);
-            }
-            lagDetected = false; // Reset lag flag for the next interval
-        } else {
-            // No lag detected in the last interval, try reducing delay (min 1ms), only when VSync is off
-            if (!useVSync && nonVSyncTimeoutDelay > 1) {
-                 nonVSyncTimeoutDelay--;
-                 console.log(`No lag detected, reducing delay to ${nonVSyncTimeoutDelay}ms`);
-            }
-        }
-    }
-
-    // Schedule the next monitoring check using requestAnimationFrame
-    requestAnimationFrame(adjustTimeoutDelay);
-}
-*/
+// 启动渲染循环
+startRenderingLoop();
 </script>
 <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "594fe604ced84f1ebd8d496d73b37429"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
